@@ -1,0 +1,143 @@
+import unicodedata
+import codecs
+import csv
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+import scipy.stats as stats
+import nltk.sentiment.vader as vader #you probably need to 'pip install vaderSentiment' first
+from nltk.sentiment.vader import SentimentIntensityAnalyzer 
+from datetime import datetime
+
+## Data munging
+
+def cleanGarminData(dataIn, csvOut):
+    df = pd.read_csv(dataIn)
+    df = df[df['activeKilocalories']==df['activeKilocalories']].reset_index(drop=True)
+    delete = ['Unnamed: 0', 'abnormalHeartRateAlertsCount', 'activeKilocalories', 'activityStressPercentage',
+              'bodyBatteryMostRecentValue', 'averageMonitoringEnvironmentAltitude', 'averageSpo2',
+              'avgWakingRespirationValue', 'bmrKilocalories', 'burnedKilocalories', 'consumedKilocalories',
+              'dailyStepGoal', 'durationInMilliseconds','floorsAscended', 'floorsAscendedInMeters',
+              'floorsDescended','floorsDescendedInMeters', 'highStressDuration', 'highestRespirationValue',
+              'includesActivityData', 'includesCalorieConsumedData','includesWellnessData',
+              'intensityMinutesGoal','lastSyncTimestampGMT','latestRespirationTimeGMT',
+              'latestRespirationValue', 'latestSpo2','latestSpo2ReadingTimeGmt', 'latestSpo2ReadingTimeLocal',
+              'lowStressPercentage', 'maxHeartRate', 'measurableAwakeDuration', 'mediumStressDuration',
+              'minAvgHeartRate','minHeartRate', 'moderateIntensityMinutes', 'netCalorieGoal',
+              'netRemainingKilocalories', 'privacyProtected', 'remainingKilocalories','restStressDuration',
+              'rule', 'source','stressQualifier','uncategorizedStressDuration','uncategorizedStressPercentage',
+              'userDailySummaryId','userFloorsAscendedGoal', 'userProfileId', 'uuid',
+              'wellnessActiveKilocalories', 'wellnessDescription', 'wellnessDistanceMeters', 'wellnessEndTimeGmt',
+              'wellnessEndTimeLocal', 'wellnessKilocalories', 'wellnessStartTimeGmt','wellnessStartTimeLocal']
+
+    for i in range(len(delete)):
+        del df[delete[i]]
+
+    df = df.dropna(axis=1,how="all")
+    cols = df.columns
+    df[cols] = df[cols].fillna(value=df[cols].mean())
+
+    df.to_csv(csvOut,index=False)
+
+
+#for i in range(7): #change range to match the number of Garmin data files named by number
+for i in [2]: #or just do this to focus on a single file, in this case we have 3.csv so use [2]
+    dataIn = str(i+1)+".csv"
+    csvOut = str(i+1)+"clean.csv"
+    cleanGarminData(dataIn, csvOut)
+    
+# Data Standardization
+
+df = pd.read_csv('3clean.csv')
+date = df['calendarDate']
+del df['calendarDate']
+z = np.abs(stats.zscore(df))
+ss = StandardScaler()
+df = ss.fit_transform(df.values)
+df = pd.DataFrame(df)
+df['calendarDate'] = date
+df.columns=['activeSeconds', 'activityStressDuration', 'averageStressLevel',
+       'bodyBatteryChargedValue', 'bodyBatteryDrainedValue',
+       'bodyBatteryHighestValue', 'bodyBatteryLowestValue',
+       'highStressPercentage', 'highlyActiveSeconds', 'lowStressDuration',
+       'lowestRespirationValue', 'lowestSpo2', 'maxAvgHeartRate',
+       'maxStressLevel', 'measurableAsleepDuration', 'mediumStressPercentage',
+       'restStressPercentage', 'restingHeartRate', 'sedentarySeconds',
+       'sleepingSeconds', 'stressDuration', 'stressPercentage',
+       'totalDistanceMeters', 'totalKilocalories', 'totalSteps',
+       'totalStressDuration', 'vigorousIntensityMinutes','AvgRestingHR','Date']
+data = df[(z<3).all(axis=1)]
+
+# Now to create a new "clean" csv with encoding errors corrected; you can avoid 
+# this by specifying the proper encoding when downloading chat data initially
+
+with open("call text file here", 'r', encoding="cp1252") as input_file:
+    with open("OZ 3 clean.csv", 'w') as output_file:
+        for line in input_file:
+            output_file.write(line.replace("â€™","'"))
+
+
+# Sentiment analysis using Vader
+
+dataOZ = pd.read_csv("OZ 3 clean.csv",encoding ='iso-8859-1')
+vader = SentimentIntensityAnalyzer()
+
+unique = dataOZ['Date'].unique()
+analysis = []
+a = {}
+q = 0
+
+for i in range(len(dataOZ['Date'])):
+    q = dataOZ.loc[i,'Date']
+    if q in a:
+        a[q].append(dataOZ.loc[i])
+    else:
+        a[q] = [dataOZ.loc[i]]
+                
+for q in a:
+    matrix = []
+    for thing in [thing['Chat contents'] for thing in a[q]]: # trololol
+        # Here, we're only doing the analysis on the chat messages themselves, as you can see in the output.
+        # This probably still isn't what you want because it includes the responses from the ambassador.
+        print(thing)
+        b = vader.polarity_scores(thing)
+        matrix.append(b["compound"])
+    np.mean(matrix)
+    analysis.append(np.mean(matrix))
+
+analysis_df = pd.DataFrame(analysis, columns = ['Polarity'])
+sentimentResults = pd.DataFrame(unique, columns = ['Date'])
+sentimentResults['Polarity_Score'] = analysis_df
+sentimentResults
+
+#running this more than once results in argument errors
+
+for i in range(len(df['Date'])):
+    df.loc[i,'Date'] = datetime.strptime(df['Date'][i], "%Y-%m-%d")
+for i in range(len(sentimentResults['Date'])):
+    sentimentResults.loc[i,'Date']=datetime.strptime(sentimentResults['Date'][i], "%d-%b-%y")
+df = pd.merge(df,sentimentResults,on='Date', how = 'outer')
+
+# data analysis
+
+correlationMatrix = df.corr()
+
+correlationMatrix.style.background_gradient(cmap='coolwarm')
+
+df_polarity = df.dropna()
+plt.plot(df_polarity['totalSteps'],color ='red', label = 'Total Steps')
+plt.plot(df_polarity['Polarity_Score'],color = 'blue', label = 'Polarity Score')
+plt.legend()
+plt.show()
+
+df_polarity
+
+df_polarity = df.dropna()
+plt.plot(df_polarity['activeSeconds'],color ='red', label = 'Active Seconds')
+plt.plot(df_polarity['totalDistanceMeters'],color ='pink', label = 'Total Distance in km')
+plt.plot(df_polarity['bodyBatteryChargedValue'],color ='green', label = 'Body Battery Charged Value')
+plt.plot(df_polarity['Polarity_Score'],color = 'blue', label = 'Polarity Score')
+plt.legend()
+plt.show()
